@@ -57,8 +57,8 @@ COLOR_WHITE     EQU 00FFFFFFh
 COLOR_LIGHTGRAY EQU 00C8C8C8h
 COLOR_DARKGRAY  EQU 00555555h
 COLOR_DARKRED   EQU 00000088h
-COLOR_ROAD      EQU 00404040h
-COLOR_GRASS     EQU 00205020h
+COLOR_ROAD      EQU 00484848h
+COLOR_GRASS     EQU 00226622h
 COLOR_LANEMARK  EQU 00E0E000h
 COLOR_DARKGREEN EQU 00003800h
 COLOR_SILVER    EQU 00C0C0C0h
@@ -103,7 +103,7 @@ starArr      Star      MAX_STARS    DUP(<>)
 explosionArr Explosion MAX_EXPLOSIONS DUP(<>)
 
 ClassName db "DodgeCarClass",0
-AppName   db "4-Lane Dodge Car Game",0
+AppName   db "DODGE THE CARS  |  COAL Project",0
 
 szGameOver   db "GAME OVER",0
 szRestart    db "Press R to Play Again",0
@@ -112,9 +112,10 @@ szControls1  db "Use LEFT / RIGHT ARROW keys to change lanes",0
 szControls2  db "Avoid oncoming cars to survive!",0
 szStartMsg   db "Press ENTER to Start",0
 szScore      db "SCORE: ",0
-szScoreNum   db "0000000000",0    ; score buffer (10 digits)
+szScoreNum   db 11 dup(0)   ; 10 chars + NULL
 szBestScore  db "BEST:  ",0
-szBestNum    db "0000000000",0
+szBestNum    db 11 dup(0)
+
 
 ; Game State
 gameState   DWORD STATE_TITLE
@@ -136,8 +137,9 @@ carsPassed    DWORD 0
 
 ; Enemy spawning
 spawnTimer    DWORD 0
-spawnInterval DWORD 50      ; frames between spawns (decreases over time)
-gameSpeed     DWORD 15       ; pixels per frame enemies move down
+spawnInterval DWORD 60      ; frames between spawns (decreases over time)
+gameSpeed     DWORD 10       ; pixels per frame enemies move down
+scoreFlashTimer DWORD 0
 
 ; Randomizer
 randSeed DWORD 87654321h
@@ -209,55 +211,59 @@ fe_found:
 SpawnExplosion ENDP
 
 ; --- Convert score integer to string in szScoreNum ---
-ScoreToStr PROC USES eax ebx ecx edx
-    ; Write 10-digit score into szScoreNum
+ScoreToStr PROC USES eax ebx ecx edx edi
+
+    lea edi, szScoreNum
+
+    ; Fill buffer with spaces
+    mov ecx, 10
+    mov al, ' '
+    rep stosb
+
+    mov byte ptr [edi], 0   ; NULL terminate
+
     mov eax, score
-    mov ecx, 9              ; index of last digit
-    lea ebx, szScoreNum
-scs_lp:
+    lea edi, szScoreNum
+    add edi, 9              ; last digit position
+
+convert_loop:
     xor edx, edx
-    mov esi, 10
-    div esi                  ; eax = quotient, edx = remainder
+    mov ecx, 10
+    div ecx
     add dl, '0'
-    mov [ebx+ecx], dl
-    dec ecx
-    cmp ecx, -1
-    jl scs_done
+    mov [edi], dl
+    dec edi
     cmp eax, 0
-    jne scs_lp
-    ; fill remaining with '0'
-scs_fill:
-    cmp ecx, -1
-    jl scs_done
-    mov byte ptr [ebx+ecx], '0'
-    dec ecx
-    jmp scs_fill
-scs_done:
+    jne convert_loop
+
     ret
 ScoreToStr ENDP
 
-BestToStr PROC USES eax ebx ecx edx
+BestToStr PROC USES eax ebx ecx edx edi
+
+    lea edi, szBestNum
+
+    ; Fill buffer with spaces
+    mov ecx, 10
+    mov al, ' '
+    rep stosb
+
+    mov byte ptr [edi], 0
+
     mov eax, bestScore
-    mov ecx, 9
-    lea ebx, szBestNum
-bts_lp:
+    lea edi, szBestNum
+    add edi, 9
+
+convert_loop:
     xor edx, edx
-    mov esi, 10
-    div esi
+    mov ecx, 10
+    div ecx
     add dl, '0'
-    mov [ebx+ecx], dl
-    dec ecx
-    cmp ecx, -1
-    jl bts_done
+    mov [edi], dl
+    dec edi
     cmp eax, 0
-    jne bts_lp
-bts_fill:
-    cmp ecx, -1
-    jl bts_done
-    mov byte ptr [ebx+ecx], '0'
-    dec ecx
-    jmp bts_fill
-bts_done:
+    jne convert_loop
+
     ret
 BestToStr ENDP
 
@@ -442,55 +448,70 @@ up_done:
     ret
 UpdatePlayer ENDP
 
-; --- Update enemies ---
 UpdateEnemies PROC USES esi ecx
-    ; Spawn logic
+
+    ; -------- Spawn logic --------
     inc spawnTimer
     mov eax, spawnTimer
     cmp eax, spawnInterval
     jl ue_move
+
     mov spawnTimer, 0
     call SpawnEnemy
 
 ue_move:
     mov esi, OFFSET enemyArr
     mov ecx, MAX_ENEMIES
+
 ue_lp:
     cmp [esi].Enemy.isActive, 0
     je ue_nx
-    ; Move down
+
+    ; -------- Move enemy --------
     mov eax, gameSpeed
     add [esi].Enemy.posy, eax
-    ; Passed screen bottom? -> score!
+
+    ; -------- Check if passed screen --------
     mov eax, [esi].Enemy.posy
     cmp eax, SCREEN_HEIGHT
     jl ue_nx
-    ; Car passed - increment score
+
+    ; -------- Enemy passed → score --------
     mov [esi].Enemy.isActive, 0
+
     inc carsPassed
-    add score, 1
-    ; every 10 cars passed, speed up
+    inc score                ; cleaner than add score,1
+    mov scoreFlashTimer, 6
+
+    ; -------- Milestone every 10 cars --------
     mov eax, carsPassed
     xor edx, edx
     mov ecx, 10
-    div ecx
+    div ecx                  ; edx = remainder
+
     cmp edx, 0
     jne ue_nx
-    ; increase speed every 10 cars
+
+    ; -------- Increase difficulty --------
+
+    ; Speed increase (max 30)
     mov eax, gameSpeed
-    cmp eax, 18
-    jge ue_nx
-    inc gameSpeed
-    ; also tighten spawn interval
+    cmp eax, 30
+    jge skip_speed
+    add gameSpeed, 2
+skip_speed:
+
+    ; Spawn faster (min 12)
     mov eax, spawnInterval
-    cmp eax, 20
+    cmp eax, 12
     jle ue_nx
-    sub eax, 3
-    mov spawnInterval, eax
+    sub spawnInterval, 4
+
 ue_nx:
     add esi, TYPE Enemy
     dec ecx
     jnz ue_lp
+
     ret
 UpdateEnemies ENDP
 
@@ -542,190 +563,262 @@ CheckCollisions ENDP
 ; --- Draw a car at (posX, posY) ---
 DrawCar PROC hdc:DWORD, posX:DWORD, posY:DWORD, bodyCol:DWORD, isPlayer:DWORD
 
-    ; ---- Body (main rectangle) ----
+    ; ---- Main Body ----
     invoke DrawRect, hdc, posX, posY, ENEMY_WIDTH, ENEMY_HEIGHT, bodyCol
 
-    ; ---- Roof / cabin ----
+    ; ---- Body side accent lines (darker shade on edges) ----
+    invoke DrawRect, hdc, posX, posY, 4, ENEMY_HEIGHT, COLOR_DARKGRAY
     mov eax, posX
-    add eax, 12
-    mov ebx, eax
+    add eax, ENEMY_WIDTH
+    sub eax, 4
+    invoke DrawRect, hdc, eax, posY, 4, ENEMY_HEIGHT, COLOR_DARKGRAY
 
-    mov eax, posY
-    add eax, 22
-    mov edx, eax
+    ; ---- Cabin / Roof ----
+    mov eax, posX
+    add eax, 10
+    mov ebx, posY
+    add ebx, 24
+    invoke DrawRect, hdc, eax, ebx, 56, 50, COLOR_DARKGRAY
 
-    invoke DrawRect, hdc, ebx, edx, 52, 45, COLOR_DARKGRAY
+    ; ---- Cabin inner highlight (makes roof look 3D) ----
+    mov eax, posX
+    add eax, 14
+    mov ebx, posY
+    add ebx, 27
+    invoke DrawRect, hdc, eax, ebx, 48, 8, 00606060h
+
+    ; ---- Door line (horizontal divider across body) ----
+    mov eax, posX
+    add eax, 4
+    mov ebx, posY
+    add ebx, 74
+    invoke DrawRect, hdc, eax, ebx, 68, 3, COLOR_DARKGRAY
+
+    ; ---- Door handle left ----
+    mov eax, posX
+    add eax, 8
+    mov ebx, posY
+    add ebx, 79
+    invoke DrawRect, hdc, eax, ebx, 14, 4, COLOR_LIGHTGRAY
+
+    ; ---- Door handle right ----
+    mov eax, posX
+    add eax, 54
+    mov ebx, posY
+    add ebx, 79
+    invoke DrawRect, hdc, eax, ebx, 14, 4, COLOR_LIGHTGRAY
 
     ; ---- Windshields ----
     .IF isPlayer == 1
-
-        ; Front windshield (top)
+        ; Front windshield (top of car)
         mov eax, posX
-        add eax, 14
-        mov ebx, eax
+        add eax, 13
+        mov ebx, posY
+        add ebx, 10
+        invoke DrawRect, hdc, eax, ebx, 50, 20, COLOR_CYAN
 
-        mov eax, posY
-        add eax, 12
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 48, 18, COLOR_CYAN
-
-        ; Rear windshield (bottom)
+        ; Rear windshield (bottom of car)
         mov eax, posX
-        add eax, 14
-        mov ebx, eax
-
-        mov eax, posY
-        add eax, 88
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 48, 16, COLOR_CYAN
+        add eax, 13
+        mov ebx, posY
+        add ebx, 88
+        invoke DrawRect, hdc, eax, ebx, 50, 18, COLOR_CYAN
 
     .ELSE
-
-        ; Enemy front (bottom)
+        ; Enemy front windshield (bottom - facing player)
         mov eax, posX
-        add eax, 14
-        mov ebx, eax
+        add eax, 13
+        mov ebx, posY
+        add ebx, 88
+        invoke DrawRect, hdc, eax, ebx, 50, 18, COLOR_CYAN
 
-        mov eax, posY
-        add eax, 90
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 48, 18, COLOR_CYAN
-
-        ; Enemy rear (top)
+        ; Enemy rear windshield (top)
         mov eax, posX
-        add eax, 14
-        mov ebx, eax
-
-        mov eax, posY
-        add eax, 12
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 48, 16, COLOR_CYAN
-
+        add eax, 13
+        mov ebx, posY
+        add ebx, 10
+        invoke DrawRect, hdc, eax, ebx, 50, 20, COLOR_CYAN
     .ENDIF
 
-    ; ---- Headlights / taillights ----
+    ; ---- Headlights & Taillights ----
     .IF isPlayer == 1
-
-        ; Headlights (top)
+        ; --- Headlights (top) LEFT ---
         mov eax, posX
-        add eax, 6
-        mov ebx, eax
+        add eax, 5
+        mov ebx, posY
+        add ebx, 4
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_YELLOW
 
-        mov eax, posY
-        add eax, 6
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 18, 10, COLOR_YELLOW
-
+        ; headlight inner glow
         mov eax, posX
-        add eax, 52
-        mov ebx, eax
+        add eax, 7
+        mov ebx, posY
+        add ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_WHITE
 
-        invoke DrawRect, hdc, ebx, edx, 18, 10, COLOR_YELLOW
-
-        ; Taillights (bottom)
+        ; --- Headlights (top) RIGHT ---
         mov eax, posX
-        add eax, 6
-        mov ebx, eax
+        add eax, 49
+        mov ebx, posY
+        add ebx, 4
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_YELLOW
 
-        mov eax, posY
-        add eax, 104
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 18, 10, COLOR_RED
-
+        ; headlight inner glow
         mov eax, posX
-        add eax, 52
-        mov ebx, eax
+        add eax, 51
+        mov ebx, posY
+        add ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_WHITE
 
-        invoke DrawRect, hdc, ebx, edx, 18, 10, COLOR_RED
+        ; --- Taillights (bottom) LEFT ---
+        mov eax, posX
+        add eax, 5
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 12
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_RED
+
+        ; taillight inner
+        mov eax, posX
+        add eax, 7
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 10
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_DARKRED
+
+        ; --- Taillights (bottom) RIGHT ---
+        mov eax, posX
+        add eax, 49
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 12
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_RED
+
+        ; taillight inner
+        mov eax, posX
+        add eax, 51
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 10
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_DARKRED
 
     .ELSE
-
-        ; Enemy headlights (bottom)
+        ; --- Enemy headlights (bottom - facing player) LEFT ---
         mov eax, posX
-        add eax, 6
-        mov ebx, eax
+        add eax, 5
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 12
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_YELLOW
 
-        mov eax, posY
-        add eax, 104
-        mov edx, eax
-
-        invoke DrawRect, hdc, ebx, edx, 18, 10, COLOR_YELLOW
-
+        ; headlight inner glow
         mov eax, posX
-        add eax, 52
-        mov ebx, eax
+        add eax, 7
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 10
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_WHITE
 
-        invoke DrawRect, hdc, ebx, edx, 18, 10, COLOR_YELLOW
+        ; --- Enemy headlights (bottom) RIGHT ---
+        mov eax, posX
+        add eax, 49
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 12
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_YELLOW
 
+        ; headlight inner glow
+        mov eax, posX
+        add eax, 51
+        mov ebx, posY
+        add ebx, ENEMY_HEIGHT
+        sub ebx, 10
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_WHITE
+
+        ; --- Enemy taillights (top) LEFT ---
+        mov eax, posX
+        add eax, 5
+        mov ebx, posY
+        add ebx, 4
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_RED
+
+        ; taillight inner
+        mov eax, posX
+        add eax, 7
+        mov ebx, posY
+        add ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_DARKRED
+
+        ; --- Enemy taillights (top) RIGHT ---
+        mov eax, posX
+        add eax, 49
+        mov ebx, posY
+        add ebx, 4
+        invoke DrawRect, hdc, eax, ebx, 22, 8, COLOR_RED
+
+        ; taillight inner
+        mov eax, posX
+        add eax, 51
+        mov ebx, posY
+        add ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 18, 5, COLOR_DARKRED
     .ENDIF
 
-    ; ---- Wheels ----
+    ; ---- Wheels (pure black, all 4 corners) ----
 
     ; Top-left
     mov eax, posX
     sub eax, 8
-    mov ebx, eax
-
-    mov eax, posY
-    add eax, 10
-    mov edx, eax
-
-    invoke DrawRect, hdc, ebx, edx, 10, 24, COLOR_BLACK
+    mov ebx, posY
+    add ebx, 8
+    invoke DrawRect, hdc, eax, ebx, 12, 28, COLOR_BLACK
 
     ; Top-right
     mov eax, posX
     add eax, ENEMY_WIDTH
-    sub eax, 2
-    mov ebx, eax
-
-    invoke DrawRect, hdc, ebx, edx, 10, 24, COLOR_BLACK
+    sub eax, 4
+    mov ebx, posY
+    add ebx, 8
+    invoke DrawRect, hdc, eax, ebx, 12, 28, COLOR_BLACK
 
     ; Bottom-left
     mov eax, posX
     sub eax, 8
-    mov ebx, eax
-
-    mov eax, posY
-    add eax, ENEMY_HEIGHT
-    sub eax, 34
-    mov edx, eax
-
-    invoke DrawRect, hdc, ebx, edx, 10, 24, COLOR_BLACK
+    mov ebx, posY
+    add ebx, ENEMY_HEIGHT
+    sub ebx, 36
+    invoke DrawRect, hdc, eax, ebx, 12, 28, COLOR_BLACK
 
     ; Bottom-right
     mov eax, posX
     add eax, ENEMY_WIDTH
-    sub eax, 2
-    mov ebx, eax
+    sub eax, 4
+    mov ebx, posY
+    add ebx, ENEMY_HEIGHT
+    sub ebx, 36
+    invoke DrawRect, hdc, eax, ebx, 12, 28, COLOR_BLACK
 
-    invoke DrawRect, hdc, ebx, edx, 10, 24, COLOR_BLACK
-
-    ; ---- Center stripe ----
+    ; ---- Center hood stripe ----
     mov eax, posX
-    add eax, 35
-    mov ebx, eax
-
-    mov eax, posY
-    add eax, 70
-    mov edx, eax
-
-    invoke DrawRect, hdc, ebx, edx, 6, 14, COLOR_LIGHTGRAY
+    add eax, 34
+    mov ebx, posY
+    add ebx, 2
+    invoke DrawRect, hdc, eax, ebx, 8, 10, COLOR_LIGHTGRAY
 
     ret
 
 DrawCar ENDP
 
-; --- Main update ---
 UpdateGame PROC
     inc frameCount
 
-    ; Update lane line scroll positions
+    ; ===== Score flash timer (NEW) =====
+    cmp scoreFlashTimer, 0
+    jle no_flash_dec
+    dec scoreFlashTimer
+no_flash_dec:
+
+    ; ===== Update lane line scroll =====
     mov esi, OFFSET starArr
     mov ecx, MAX_STARS
 ul_lp:
@@ -739,7 +832,7 @@ ul_nx:
     dec ecx
     jnz ul_lp
 
-    ; Update explosions
+    ; ===== Update explosions =====
     mov esi, OFFSET explosionArr
     mov ecx, MAX_EXPLOSIONS
 ux_lp:
@@ -754,7 +847,7 @@ ux_nx:
     dec ecx
     jnz ux_lp
 
-    ; Title screen: wait for Enter
+    ; ===== Title screen =====
     .IF gameState == STATE_TITLE
         invoke GetAsyncKeyState, VK_RETURN
         test eax, 8000h
@@ -763,6 +856,7 @@ ux_nx:
         jmp ug_end
     .ENDIF
 
+    ; ===== Gameplay =====
     cmp gameState, STATE_PLAY
     jne ug_end
 
@@ -791,35 +885,89 @@ RenderGame PROC USES esi hdc:DWORD
     ; =====================
     ; BACKGROUND
     ; =====================
-    ; Left grass
+
+    ; Left grass base
     invoke DrawRect, hdc, 0, 0, ROAD_LEFT, SCREEN_HEIGHT, COLOR_GRASS
-    ; Right grass
+    ; Right grass base
     invoke DrawRect, hdc, ROAD_RIGHT, 0, 100, SCREEN_HEIGHT, COLOR_GRASS
-    ; Road
+
+    ; Grass texture stripes (left side)
+    invoke DrawRect, hdc, 8,  0, 6, SCREEN_HEIGHT, COLOR_DARKGREEN
+    invoke DrawRect, hdc, 22, 0, 3, SCREEN_HEIGHT, 00185018h
+    invoke DrawRect, hdc, 40, 0, 6, SCREEN_HEIGHT, COLOR_DARKGREEN
+    invoke DrawRect, hdc, 55, 0, 3, SCREEN_HEIGHT, 00185018h
+    invoke DrawRect, hdc, 70, 0, 6, SCREEN_HEIGHT, COLOR_DARKGREEN
+
+    ; Grass texture stripes (right side)
+    invoke DrawRect, hdc, 716, 0, 6, SCREEN_HEIGHT, COLOR_DARKGREEN
+    invoke DrawRect, hdc, 730, 0, 3, SCREEN_HEIGHT, 00185018h
+    invoke DrawRect, hdc, 748, 0, 6, SCREEN_HEIGHT, COLOR_DARKGREEN
+    invoke DrawRect, hdc, 763, 0, 3, SCREEN_HEIGHT, 00185018h
+    invoke DrawRect, hdc, 778, 0, 6, SCREEN_HEIGHT, COLOR_DARKGREEN
+
+    ; Road base
     invoke DrawRect, hdc, ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT, COLOR_ROAD
 
-    ; Road shoulder lines (white solid)
-    invoke DrawRect, hdc, ROAD_LEFT, 0, 4, SCREEN_HEIGHT, COLOR_WHITE
-    invoke DrawRect, hdc, ROAD_RIGHT-4, 0, 4, SCREEN_HEIGHT, COLOR_WHITE
+    ; Road edge shadow (left inner)
+    invoke DrawRect, hdc, ROAD_LEFT, 0, 8, SCREEN_HEIGHT, 00202020h
+    ; Road edge shadow (right inner)
+    invoke DrawRect, hdc, ROAD_RIGHT-8, 0, 8, SCREEN_HEIGHT, 00202020h
 
-    ; Dashed lane dividers (scrolling)
+    ; Road shoulder lines (white solid)
+    invoke DrawRect, hdc, ROAD_LEFT,   0, 5, SCREEN_HEIGHT, COLOR_WHITE
+    invoke DrawRect, hdc, ROAD_RIGHT-5, 0, 5, SCREEN_HEIGHT, COLOR_WHITE
+
+    ; Curb stripes left (red/white alternating - use lane mark scroll)
+    mov esi, OFFSET starArr
+    mov ecx, MAX_STARS
+crb_lp:
+    push ecx
+    mov eax, [esi].Star.posy
+    ; alternate red and white every 24px
+    xor edx, edx
+    mov ebx, 48
+    div ebx
+    .IF edx < 24
+        invoke DrawRect, hdc, 93, [esi].Star.posy, 7, 24, COLOR_RED
+    .ELSE
+        invoke DrawRect, hdc, 93, [esi].Star.posy, 7, 24, COLOR_WHITE
+    .ENDIF
+    pop ecx
+    add esi, TYPE Star
+    dec ecx
+    jnz crb_lp
+
+    ; Curb stripes right
+    mov esi, OFFSET starArr
+    mov ecx, MAX_STARS
+crb2_lp:
+    push ecx
+    mov eax, [esi].Star.posy
+    xor edx, edx
+    mov ebx, 48
+    div ebx
+    .IF edx < 24
+        invoke DrawRect, hdc, 700, [esi].Star.posy, 7, 24, COLOR_RED
+    .ELSE
+        invoke DrawRect, hdc, 700, [esi].Star.posy, 7, 24, COLOR_WHITE
+    .ENDIF
+    pop ecx
+    add esi, TYPE Star
+    dec ecx
+    jnz crb2_lp
+
+    ; Dashed lane dividers (scrolling) - wider and more visible
     mov esi, OFFSET starArr
     mov ecx, MAX_STARS
 rll_lp:
     push ecx
     mov eax, [esi].Star.posx
     mov ebx, [esi].Star.posy
-    invoke DrawRect, hdc, eax, ebx, 4, 16, COLOR_LANEMARK
+    invoke DrawRect, hdc, eax, ebx, 5, 20, COLOR_LANEMARK
     pop ecx
     add esi, TYPE Star
     dec ecx
     jnz rll_lp
-
-    ; Grass edge stripes
-    invoke DrawRect, hdc, 10, 0, 8, SCREEN_HEIGHT, COLOR_DARKGREEN
-    invoke DrawRect, hdc, 82, 0, 8, SCREEN_HEIGHT, COLOR_DARKGREEN
-    invoke DrawRect, hdc, 710, 0, 8, SCREEN_HEIGHT, COLOR_DARKGREEN
-    invoke DrawRect, hdc, 782, 0, 8, SCREEN_HEIGHT, COLOR_DARKGREEN
 
     ; =====================
     ; GAME OBJECTS
@@ -883,86 +1031,202 @@ rx_nx:
     ; =====================
     invoke SetBkMode, hdc, TRANSPARENT
 
+    ; HUD background panel
+    ; Outer border
+    invoke DrawRect, hdc, 0, 0, 240, 80, COLOR_YELLOW
+
+    ; Inner panel
+    invoke DrawRect, hdc, 3, 3, 234, 74, 00101010h
+
+; Top glow strip
+    invoke DrawRect, hdc, 3, 3, 234, 6, COLOR_YELLOW
+
     .IF gameState == STATE_PLAY || gameState == STATE_DEAD
-        ; Score label + number
-        invoke ScoreToStr
-        invoke SetTextColor, hdc, COLOR_WHITE
-        mov rcT.top, 8
-        mov rcT.bottom, 32
-        invoke DrawTextA, hdc, ADDR szScore, -1, ADDR rcT, DT_LEFT
-        mov rcT.left, 80
-        invoke DrawTextA, hdc, ADDR szScoreNum, -1, ADDR rcT, DT_LEFT
-        mov rcT.left, 0
 
-        ; Best score
-        invoke BestToStr
-        invoke SetTextColor, hdc, COLOR_YELLOW
-        mov rcT.top, 36
-        mov rcT.bottom, 60
-        invoke DrawTextA, hdc, ADDR szBestScore, -1, ADDR rcT, DT_LEFT
-        mov rcT.left, 80
-        invoke DrawTextA, hdc, ADDR szBestNum, -1, ADDR rcT, DT_LEFT
-        mov rcT.left, 0
-
-        ; Speed indicator on right
+        ; ===== SCORE LABEL =====
         invoke SetTextColor, hdc, COLOR_CYAN
+        mov rcT.left, 10
+        mov rcT.right, 120
+        mov rcT.top, 10
+        mov rcT.bottom, 35
+        invoke DrawTextA, hdc, ADDR szScore, -1, ADDR rcT, DT_LEFT or DT_SINGLELINE
+
+        ; ===== SCORE VALUE =====
+        invoke ScoreToStr
+
+        ; ---- FLASH LOGIC HERE ----
+        cmp scoreFlashTimer, 0
+        jle normal_color
+
+        invoke SetTextColor, hdc, COLOR_GREEN
+        jmp draw_score
+
+        normal_color:
+        invoke SetTextColor, hdc, COLOR_WHITE
+
+        draw_score:
+        mov rcT.left, 100
+        mov rcT.right, 230
+        invoke DrawTextA, hdc, ADDR szScoreNum, -1, ADDR rcT, DT_LEFT or DT_SINGLELINE  
+
+
+        ; ===== BEST LABEL =====
+        invoke SetTextColor, hdc, COLOR_YELLOW
+        mov rcT.left, 10
+        mov rcT.right, 120
+        mov rcT.top, 40
+        mov rcT.bottom, 65
+        invoke DrawTextA, hdc, ADDR szBestScore, -1, ADDR rcT, DT_LEFT or DT_SINGLELINE
+
+        ; ===== BEST VALUE =====
+        invoke BestToStr
+        invoke SetTextColor, hdc, COLOR_WHITE
+        mov rcT.left, 100
+        mov rcT.right, 230
+        invoke DrawTextA, hdc, ADDR szBestNum, -1, ADDR rcT, DT_LEFT or DT_SINGLELINE
+
+        ; Reset rect (important)
+        mov rcT.left, 0
+        mov rcT.right, SCREEN_WIDTH
+
     .ENDIF
 
     ; =====================
     ; OVERLAYS
     ; =====================
     .IF gameState == STATE_TITLE
-        ; Dark overlay panel
-        invoke DrawRect, hdc, 150, 160, 500, 300, COLOR_BLACK
-        invoke DrawRect, hdc, 154, 164, 492, 292, COLOR_DARKGRAY
+        ; Outer glow border
+        invoke DrawRect, hdc, 140, 120, 520, 380, COLOR_YELLOW
+        ; Main panel
+        invoke DrawRect, hdc, 144, 124, 512, 372, COLOR_BLACK
+        ; Inner accent line top
+        invoke DrawRect, hdc, 148, 128, 504, 4, COLOR_YELLOW
+        ; Inner accent line bottom
+        invoke DrawRect, hdc, 148, 488, 504, 4, COLOR_YELLOW
+        ; Inner accent line left
+        invoke DrawRect, hdc, 148, 128, 4, 364, COLOR_YELLOW
+        ; Inner accent line right
+        invoke DrawRect, hdc, 648, 128, 4, 364, COLOR_YELLOW
 
+        ; Title background flash strip
+        invoke DrawRect, hdc, 148, 148, 504, 60, 00003060h
+
+        ; Title text
         invoke SetTextColor, hdc, COLOR_YELLOW
-        mov rcT.left, 150
-        mov rcT.right, 650
-        mov rcT.top, 185
-        mov rcT.bottom, 230
+        mov rcT.left, 140
+        mov rcT.right, 660
+        mov rcT.top, 152
+        mov rcT.bottom, 208
         invoke DrawTextA, hdc, ADDR szTitle, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
 
-        invoke SetTextColor, hdc, COLOR_WHITE
-        mov rcT.top, 255
-        mov rcT.bottom, 285
+        ; Divider line under title
+        invoke DrawRect, hdc, 200, 212, 400, 3, COLOR_YELLOW
+
+        ; Controls header
+        invoke SetTextColor, hdc, COLOR_CYAN
+        mov rcT.top, 225
+        mov rcT.bottom, 255
         invoke DrawTextA, hdc, ADDR szControls1, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
 
-        mov rcT.top, 295
-        mov rcT.bottom, 325
+        invoke SetTextColor, hdc, COLOR_WHITE
+        mov rcT.top, 262
+        mov rcT.bottom, 292
         invoke DrawTextA, hdc, ADDR szControls2, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
 
-        invoke SetTextColor, hdc, COLOR_GREEN
-        mov rcT.top, 380
-        mov rcT.bottom, 430
+        ; Divider line above start
+        invoke DrawRect, hdc, 200, 300, 400, 3, COLOR_DARKGRAY
+
+        ; Blinking PRESS ENTER text (uses animT)
+        .IF animT == 1
+            invoke SetTextColor, hdc, COLOR_GREEN
+        .ELSE
+            invoke SetTextColor, hdc, COLOR_YELLOW
+        .ENDIF
+        mov rcT.top, 310
+        mov rcT.bottom, 355
         invoke DrawTextA, hdc, ADDR szStartMsg, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
 
-        ; Draw a small preview car on title
-        invoke DrawCar, hdc, 355, 480, COLOR_GREEN, 1
+        ; Best score on title screen
+        invoke BestToStr
+        invoke SetTextColor, hdc, COLOR_YELLOW
+        mov rcT.top, 362
+        mov rcT.bottom, 392
+        invoke DrawTextA, hdc, ADDR szBestScore, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        mov rcT.top, 392
+        mov rcT.bottom, 422
+        invoke DrawTextA, hdc, ADDR szBestNum, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+
+        ; Preview car (centered)
+        invoke DrawCar, hdc, 362, 450, COLOR_GREEN, 1
 
     .ELSEIF gameState == STATE_DEAD
-        invoke DrawRect, hdc, 200, 220, 400, 180, COLOR_BLACK
-        invoke DrawRect, hdc, 204, 224, 392, 172, COLOR_DARKRED
+        ; Outer red glow border
+        invoke DrawRect, hdc, 170, 170, 460, 280, COLOR_RED
+        ; Main dark panel
+        invoke DrawRect, hdc, 174, 174, 452, 272, COLOR_BLACK
+        ; Dark red inner fill
+        invoke DrawRect, hdc, 178, 178, 444, 264, 00100020h
 
+        ; Top accent stripe
+        invoke DrawRect, hdc, 178, 178, 444, 5, COLOR_RED
+        ; Bottom accent stripe
+        invoke DrawRect, hdc, 178, 437, 444, 5, COLOR_RED
+        ; Left accent stripe
+        invoke DrawRect, hdc, 178, 178, 5, 264, COLOR_RED
+        ; Right accent stripe
+        invoke DrawRect, hdc, 617, 178, 5, 264, COLOR_RED
+
+        ; GAME OVER header strip
+        invoke DrawRect, hdc, 183, 183, 434, 55, 00000040h
+
+        ; GAME OVER text
         invoke SetTextColor, hdc, COLOR_RED
-        mov rcT.left, 200
-        mov rcT.right, 600
-        mov rcT.top, 245
-        mov rcT.bottom, 290
+        mov rcT.left, 170
+        mov rcT.right, 630
+        mov rcT.top, 188
+        mov rcT.bottom, 238
         invoke DrawTextA, hdc, ADDR szGameOver, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
 
-        invoke SetTextColor, hdc, COLOR_WHITE
-        mov rcT.top, 310
-        mov rcT.bottom, 345
-        invoke DrawTextA, hdc, ADDR szRestart, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        ; Divider
+        invoke DrawRect, hdc, 220, 242, 360, 3, COLOR_RED
 
-        ; Show final score
+        ; Final score label
         invoke ScoreToStr
         invoke SetTextColor, hdc, COLOR_YELLOW
-        mov rcT.top, 360
-        mov rcT.bottom, 395
-        invoke DrawTextA, hdc, ADDR szScore, -1, ADDR rcT, DT_CENTER
-        invoke DrawTextA, hdc, ADDR szScoreNum, -1, ADDR rcT, DT_CENTER
+        mov rcT.top, 252
+        mov rcT.bottom, 282
+        invoke DrawTextA, hdc, ADDR szScore, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+
+        ; Final score number
+        invoke SetTextColor, hdc, COLOR_WHITE
+        mov rcT.top, 282
+        mov rcT.bottom, 318
+        invoke DrawTextA, hdc, ADDR szScoreNum, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+
+        ; Divider
+        invoke DrawRect, hdc, 220, 322, 360, 3, COLOR_DARKGRAY
+
+        ; Best score
+        invoke BestToStr
+        invoke SetTextColor, hdc, COLOR_YELLOW
+        mov rcT.top, 330
+        mov rcT.bottom, 358
+        invoke DrawTextA, hdc, ADDR szBestScore, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        invoke SetTextColor, hdc, COLOR_WHITE
+        mov rcT.top, 358
+        mov rcT.bottom, 386
+        invoke DrawTextA, hdc, ADDR szBestNum, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+
+        ; Blinking restart message
+        .IF animT == 1
+            invoke SetTextColor, hdc, COLOR_GREEN
+        .ELSE
+            invoke SetTextColor, hdc, COLOR_YELLOW
+        .ENDIF
+        mov rcT.top, 394
+        mov rcT.bottom, 430
+        invoke DrawTextA, hdc, ADDR szRestart, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+
     .ENDIF
 
     ret
@@ -1092,3 +1356,4 @@ start:
     invoke WinMain, eax, NULL, NULL, SW_SHOWDEFAULT
     invoke ExitProcess, eax
 END start
+
